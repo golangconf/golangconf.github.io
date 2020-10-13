@@ -108,6 +108,7 @@ var App;
         let currentSimulationInterval = null;
         let currentSimulationPlayer = null;
         let lastNickname = '';
+        let submittedSet = {};
         function setCreep(name, hp) {
             elements.creep.pic.src = `img/creep/${name}.png`;
             elements.creep.name.innerText = name;
@@ -150,6 +151,7 @@ var App;
             setNextCreep('Imp', getCreepStats('Imp').maxHP);
             // Clear the game logs.
             elements.log.innerText = '';
+            elements.button.submit.style.display = 'none';
         }
         function renderCreepDetails(name, stats) {
             let details = `
@@ -329,10 +331,16 @@ var App;
                     return;
                 }
                 lastNickname = nickname;
+                let code = elements.tactics.value;
+                if (submittedSet[code]) {
+                    console.log("don't send: already submitted");
+                    return;
+                }
+                submittedSet[code] = true;
                 const payload = {
                     'nickname': nickname,
                     'avatar': AVATAR_ID,
-                    'code': elements.tactics.value,
+                    'code': code,
                 };
                 var xhr = new XMLHttpRequest();
                 var url = "https://ater.me/GnD/submit";
@@ -352,6 +360,7 @@ var App;
         const handlers = {
             victory: function () {
                 elements.status.score.classList.add('text-green');
+                elements.button.submit.style.display = 'block';
             },
             defeat: function () {
                 elements.avatar.pic.src = `img/dead_avatar/avatar${AVATAR_ID}.png`;
