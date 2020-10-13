@@ -1,0 +1,419 @@
+var App;
+(function (App) {
+    ;
+    function main() {
+        function loadGo(init) {
+            const go = new Go();
+            let stream = fetch('go.wasm', {
+                cache: 'no-cache',
+                headers: {
+                    'Cache-Control': 'no-cache',
+                }
+            });
+            WebAssembly.instantiateStreaming(stream, go.importObject).then((result) => {
+                go.run(result.instance);
+                console.log('go.wasm is loaded');
+                init();
+            });
+        }
+        function copyToClipboard(text) {
+            let el = document.createElement('textarea'); // Temp container
+            el.value = text;
+            el.setAttribute('readonly', '');
+            el.style.position = 'absolute';
+            el.style.left = '-9999px';
+            document.body.appendChild(el);
+            el.select();
+            try {
+                let ok = document.execCommand('copy');
+                console.debug('copy to clipboard:', ok);
+            }
+            catch (e) {
+                console.error('clipboard insertion failed', e);
+            }
+            document.body.removeChild(el);
+        }
+        function rand(max) {
+            return Math.floor(Math.random() * Math.floor(max));
+        }
+        function updateElementText(el, delta) {
+            let val = parseInt(el.innerText, 10);
+            let newVal = val + delta;
+            if (newVal < 0) {
+                newVal = 0;
+            }
+            el.innerText = `${newVal}`;
+        }
+        const elements = {
+            'details': document.getElementById('hover_details'),
+            'tactics': document.getElementById('tactics_editor'),
+            'button': {
+                'run': document.getElementById('button_run'),
+                'pause': document.getElementById('button_pause'),
+                'nextTurn': document.getElementById('button_next_turn'),
+                'format': document.getElementById('button_format'),
+                'submit': document.getElementById('button_submit'),
+            },
+            'speed': document.getElementById('select_speed'),
+            'tab': document.getElementById('select_tab'),
+            'log': document.getElementById('log'),
+            'avatar': {
+                'pic': document.getElementById('avatar_status_pic'),
+                'hp': document.getElementById('avatar_status_hp'),
+                'mp': document.getElementById('avatar_status_mp'),
+            },
+            'creep': {
+                'pic': document.getElementById('creep_status_pic'),
+                'name': document.getElementById('creep_status_name'),
+                'hp': document.getElementById('creep_status_hp'),
+            },
+            'nextCreep': {
+                'pic': document.getElementById('next_creep_status_pic'),
+                'name': document.getElementById('next_creep_status_name'),
+                'hp': document.getElementById('next_creep_status_hp'),
+            },
+            'status': {
+                'score': document.getElementById('status_score'),
+                'turn': document.getElementById('status_turn'),
+                'round': document.getElementById('status_round'),
+            },
+        };
+        const cardElements = {
+            'PowerAttack': document.getElementById('card_power_attack'),
+            'Firebolt': document.getElementById('card_firebolt'),
+            'Stun': document.getElementById('card_stun'),
+            'Heal': document.getElementById('card_heal'),
+            'Parry': document.getElementById('card_parry'),
+        };
+        const urlParams = new URLSearchParams(window.location.search);
+        let gameSettings = {
+            avatarHP: 40,
+            avatarMP: 20,
+            seed: null,
+        };
+        const NUM_ROUNDS = 10;
+        const AVATAR_ID = urlParams.get('avatar') || rand(5);
+        const cardDescriptions = {
+            'Attack': 'Simple offensive action',
+            'MagicArrow': 'Weak, but predictable way of inflicting damage',
+            'Firebolt': 'Deals fire magic damage',
+            'PowerAttack': 'Improved version of the Attack card',
+            'Stun': 'Make the enemy skip a couple of turns',
+            'Retreat': 'Avoid the current encounter',
+            'Rest': 'Heal minor wounds by resting',
+            'Heal': 'Heal wounds using magic',
+            'Parry': 'Reflect a melee (non-ranged) back to the enemy',
+        };
+        let paused = false;
+        let currentSimulationInterval = null;
+        let currentSimulationPlayer = null;
+        let lastNickname = '';
+        function setCreep(name, hp) {
+            elements.creep.pic.src = `img/creep/${name}.png`;
+            elements.creep.name.innerText = name;
+            elements.creep.hp.innerText = hp.toString();
+        }
+        function setNextCreep(name, hp) {
+            elements.nextCreep.pic.src = `img/creep/${name}.png`;
+            elements.nextCreep.name.innerText = name;
+            elements.nextCreep.hp.innerText = hp.toString();
+        }
+        function encodeCodeURI(code) {
+            console.log("code length: %d", code.length);
+            code = gominify(code);
+            console.log("code minformat length: %d", code.length);
+            code = LZString.compressToEncodedURIComponent(code);
+            console.log("code minify+compress length: %d", code.length);
+            return code;
+        }
+        function decodeCodeURI(uri) {
+            let code = LZString.decompressFromEncodedURIComponent(uri);
+            return gofmt(code);
+        }
+        function resetPage() {
+            applySettings();
+            // Set spell counts to 0.
+            for (const key in cardElements) {
+                cardElements[key].innerText = '0';
+            }
+            // Set status counters to 0.
+            for (const key in elements.status) {
+                elements.status[key].innerText = '0';
+            }
+            elements.status.score.classList.remove('text-green');
+            // Reset hero.
+            elements.avatar.hp.innerText = `${gameSettings.avatarHP}`;
+            elements.avatar.mp.innerText = `${gameSettings.avatarMP}`;
+            elements.avatar.pic.src = `img/avatar/avatar${AVATAR_ID}.png`;
+            // Set the initial creeps.
+            setCreep('Cheepy', getCreepStats('Cheepy').maxHP);
+            setNextCreep('Imp', getCreepStats('Imp').maxHP);
+            // Clear the game logs.
+            elements.log.innerText = '';
+        }
+        function renderCreepDetails(name, stats) {
+            let details = `
+            ${name} creep info<br>
+            <br>
+            HP: ${stats.maxHP}<br>
+            Damage: ${stats.damage[0]}-${stats.damage[1]}<br>
+            Score reward: ${stats.scoreReward}<br>
+            Cards reward: ${stats.cardsReward}<br>`;
+            if (stats.traits.length != 0) {
+                details += `Traits: ${stats.traits.join(', ')}<br>`;
+            }
+            elements.details.innerHTML = details;
+        }
+        function renderCardDetails(name, stats) {
+            let target = stats.isOffensive ? 'creep' : 'avatar';
+            let details = `
+            ${name} card info<br>
+            <br>
+            ${cardDescriptions[name]}.<br>
+            <br>
+            MP cost: ${stats.mp}<br>`;
+            if (stats.power[1] != 0) {
+                let power = (stats.power[0] == stats.power[1]) ?
+                    `${stats.power[0]}` :
+                    `${stats.power[0]}-${stats.power[1]}`;
+                details += `Power: ${power} (${stats.effect})<br>`;
+            }
+            elements.details.innerHTML = details;
+        }
+        function handlePause() {
+            paused = !paused;
+            if (paused) {
+                elements.button.pause.value = 'Resume';
+            }
+            else {
+                elements.button.pause.value = 'Pause';
+            }
+        }
+        function insertTextFirefox(field, text) {
+            // Found on https://www.everythingfrontend.com/posts/insert-text-into-textarea-at-cursor-position.html 🎈
+            field.setRangeText(text, field.selectionStart || 0, field.selectionEnd || 0, 'end' // Without this, the cursor is either at the beginning or `text` remains selected
+            );
+            field.dispatchEvent(new InputEvent('input', {
+                data: text,
+                inputType: 'insertText',
+                isComposing: false // TODO: fix @types/jsdom, this shouldn't be required
+            }));
+        }
+        // Inserts `text` at the cursor’s position, replacing any selection, with **undo** support and by firing the `input` event.
+        function insertText(field, text) {
+            const document = field.ownerDocument;
+            const initialFocus = document.activeElement;
+            if (initialFocus !== field) {
+                field.focus();
+            }
+            if (!document.execCommand('insertText', false, text)) {
+                insertTextFirefox(field, text);
+            }
+            if (initialFocus === document.body) {
+                field.blur();
+            }
+            else if (initialFocus instanceof HTMLElement && initialFocus !== field) {
+                initialFocus.focus();
+            }
+        }
+        class SimulationPlayer {
+            constructor(actions) {
+                this.nextAction = 0;
+                this.actions = actions;
+            }
+            canPlayTurn() {
+                return this.nextAction < this.actions.length;
+            }
+            playTurn() {
+                for (let i = this.nextAction; i < this.actions.length; i++) {
+                    this.nextAction++;
+                    let a = this.actions[i];
+                    if (a[0] == 'wait') {
+                        updateElementText(elements.status.turn, 1);
+                        break;
+                    }
+                    const [, ...tail] = a;
+                    handlers[a[0]].apply(null, tail);
+                }
+            }
+        }
+        function applySettings() {
+            // This game content is removed.
+        }
+        function initGame() {
+            let code = urlParams.get('code');
+            if (code !== null) {
+                elements.tactics.value = decodeCodeURI(code);
+            }
+            resetPage();
+            elements.creep.pic.onmouseenter = function (e) {
+                let currentCreep = elements.creep.name.innerText;
+                if (currentCreep === 'None') {
+                    return;
+                }
+                let creepStats = getCreepStats(currentCreep);
+                renderCreepDetails(currentCreep, creepStats);
+            };
+            elements.nextCreep.pic.onmouseenter = function (e) {
+                let nextCreep = elements.nextCreep.name.innerText;
+                if (nextCreep === 'None') {
+                    return;
+                }
+                let creepStats = getCreepStats(nextCreep);
+                renderCreepDetails(nextCreep, creepStats);
+            };
+            let cardLabels = document.getElementsByClassName('card');
+            let cardDetailsHandler = function () {
+                let cardName = this.innerText;
+                let cardStats = getCardStats(cardName);
+                renderCardDetails(cardName, cardStats);
+            };
+            for (let i = 0; i < cardLabels.length; i++) {
+                cardLabels[i].addEventListener('mouseenter', cardDetailsHandler, false);
+            }
+            elements.button.nextTurn.onclick = function (e) {
+                if (paused && currentSimulationPlayer.canPlayTurn()) {
+                    currentSimulationPlayer.playTurn();
+                }
+            };
+            elements.button.format.onclick = function (e) {
+                let code = elements.tactics.value;
+                let result = gofmt(code);
+                if (result.startsWith('error:')) {
+                    console.error("gofmt: %s", result);
+                }
+                else {
+                    elements.tactics.value = result;
+                }
+            };
+            elements.button.run.onclick = function (e) {
+                if (currentSimulationInterval) {
+                    clearInterval(currentSimulationInterval);
+                    currentSimulationInterval = null;
+                }
+                resetPage();
+                let config = {};
+                config["avatarHP"] = gameSettings.avatarHP;
+                config["avatarMP"] = gameSettings.avatarMP;
+                config["rounds"] = NUM_ROUNDS;
+                config["seed"] = gameSettings.seed;
+                let code = elements.tactics.value;
+                let actions = runSimulation(config, code);
+                let speed = parseInt(elements.speed.options[elements.speed.selectedIndex].value, 10);
+                currentSimulationPlayer = new SimulationPlayer(actions);
+                console.log('starting applyActions with speed=%d', speed);
+                console.log('actions:', actions);
+                applyActions(speed, currentSimulationPlayer);
+            };
+            document.addEventListener('keyup', function (e) {
+                let textareaFocused = (elements.tactics === document.activeElement);
+                if (e.code === 'Space' && !textareaFocused) {
+                    e.preventDefault();
+                    handlePause();
+                }
+            });
+            document.addEventListener('keydown', function (e) {
+                let textareaFocused = (elements.tactics === document.activeElement);
+                if (e.code === 'Tab' && textareaFocused) {
+                    e.preventDefault();
+                    insertText(elements.tactics, '    ');
+                }
+            });
+            elements.button.submit.onclick = function (e) {
+                let nickname = prompt('Your nickname (it will be used in the leaderboard)', lastNickname);
+                if (nickname === '') {
+                    alert("Please enter a non-empty nickname");
+                    return;
+                }
+                if (nickname === null) { // Cancel is pressed
+                    return;
+                }
+                lastNickname = nickname;
+                const payload = {
+                    'nickname': nickname,
+                    'avatar': AVATAR_ID,
+                    'code': elements.tactics.value,
+                };
+                var xhr = new XMLHttpRequest();
+                var url = "https://ater.me/GnD/submit";
+                xhr.open("POST", url, true);
+                xhr.setRequestHeader("Content-Type", "application/json");
+                xhr.onreadystatechange = function () {
+                    if (xhr.readyState === 4 && xhr.status === 200) {
+                        console.log("server response:", xhr.responseText);
+                    }
+                };
+                xhr.send(JSON.stringify(payload));
+            };
+            elements.button.pause.onclick = function (e) {
+                handlePause();
+            };
+        }
+        const handlers = {
+            victory: function () {
+                elements.status.score.classList.add('text-green');
+            },
+            defeat: function () {
+                elements.avatar.pic.src = `img/dead_avatar/avatar${AVATAR_ID}.png`;
+            },
+            log: function (message) {
+                elements.log.innerHTML += `${message}<br>`;
+                elements.log.scrollTop = elements.log.scrollHeight;
+            },
+            redLog: function (message) {
+                elements.log.innerHTML += `<span class="text-red">${message}</span><br>`;
+                elements.log.scrollTop = elements.log.scrollHeight;
+            },
+            greenLog: function (message) {
+                elements.log.innerHTML += `<span class="text-green">${message}</span><br>`;
+                elements.log.scrollTop = elements.log.scrollHeight;
+            },
+            changeCardCount: function (name, delta) {
+                updateElementText(cardElements[name], delta);
+            },
+            nextRound: function () {
+                if (parseInt(elements.status.round.innerText, 10) != NUM_ROUNDS) {
+                    updateElementText(elements.status.round, 1);
+                }
+            },
+            updateScore: function (delta) {
+                updateElementText(elements.status.score, delta);
+            },
+            updateHP: function (delta) {
+                updateElementText(elements.avatar.hp, delta);
+            },
+            updateMP: function (delta) {
+                updateElementText(elements.avatar.mp, delta);
+            },
+            updateCreepHP: function (delta) {
+                updateElementText(elements.creep.hp, delta);
+            },
+            setCreep: function (name, hp) {
+                setCreep(name, hp);
+            },
+            setNextCreep: function (name, hp) {
+                setNextCreep(name, hp);
+            },
+        };
+        function applyActions(interval, player) {
+            currentSimulationInterval = setInterval(function () {
+                if (paused) {
+                    return;
+                }
+                if (player.canPlayTurn()) {
+                    player.playTurn();
+                }
+                else {
+                    clearInterval(currentSimulationInterval);
+                    console.log('applied %d actions', player.actions.length);
+                    currentSimulationInterval = null;
+                }
+            }, interval);
+        }
+        loadGo(initGame);
+    }
+    App.main = main;
+})(App || (App = {})); // namespace App
+window.onload = function () {
+    App.main();
+};
