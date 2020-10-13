@@ -91,7 +91,7 @@ var App;
             avatarMP: 20,
             seed: null,
         };
-        const NUM_ROUNDS = 10;
+        const NUM_ROUNDS = 11;
         const AVATAR_ID = urlParams.get('avatar') || rand(5);
         const cardDescriptions = {
             'Attack': 'Simple offensive action',
@@ -316,6 +316,9 @@ var App;
             });
             document.addEventListener('keydown', function (e) {
                 let textareaFocused = (elements.tactics === document.activeElement);
+                if (textareaFocused) {
+                    elements.button.submit.style.display = 'none';
+                }
                 if (e.code === 'Tab' && textareaFocused) {
                     e.preventDefault();
                     insertText(elements.tactics, '    ');
@@ -323,11 +326,12 @@ var App;
             });
             elements.button.submit.onclick = function (e) {
                 let nickname = prompt('Your nickname (it will be used in the leaderboard)', lastNickname);
-                if (nickname === '') {
-                    alert("Please enter a non-empty nickname");
+                if (nickname === null) { // Cancel is pressed
                     return;
                 }
-                if (nickname === null) { // Cancel is pressed
+                nickname = nickname.trim();
+                if (nickname === '') {
+                    alert("Please enter a non-empty nickname");
                     return;
                 }
                 lastNickname = nickname;
